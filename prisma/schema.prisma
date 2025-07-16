@@ -1,0 +1,22 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // Reads the URL from your .env.local file
+}
+
+// Defines the table that will store your summaries in Supabase
+model Summary {
+  id              String   @id @default(cuid())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  originalUrl     String   @unique
+  summaryText     String
+  translationText String
+  fullTextMongoId String // The ID of the full article stored in MongoDB
+}
