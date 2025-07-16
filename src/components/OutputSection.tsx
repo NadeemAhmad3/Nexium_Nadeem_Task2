@@ -13,20 +13,49 @@ interface OutputSectionProps {
   error: string | null;
 }
 
-// The original, visually rich component with new features integrated.
+// This is the component where all the fixes have been applied.
+// This is the component where all the fixes have been applied.
+// FINAL VERSION of the DataSynapseNode component
+
+// FINAL, ROBUST VERSION of the DataSynapseNode component
+
+// FINAL ROBUST VERSION of DataSynapseNode
+
 const DataSynapseNode: FC<{
     icon: React.ElementType;
     title: string;
     text: string;
     isRtl?: boolean;
-    lang: string; // e.g., 'en-US' or 'ur-PK'
+    lang: string;
     variants?: Variants;
 }> = ({ icon: Icon, title, text, isRtl = false, lang, variants }) => {
 
     const [isCopied, setIsCopied] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
+    // --- FIX #1: Store the browser's voices in React State ---
+    const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
-    // Action Handlers
+    // --- FIX #2: A dedicated useEffect to load voices safely ---
+    useEffect(() => {
+        // This function loads voices into our component's state.
+        const loadVoices = () => {
+            const availableVoices = speechSynthesis.getVoices();
+            if (availableVoices.length > 0) {
+                setVoices(availableVoices);
+            }
+        };
+
+        // Load voices immediately and add an event listener for when they change.
+        loadVoices();
+        speechSynthesis.addEventListener('voiceschanged', loadVoices);
+
+        // Cleanup function to remove listener and stop speech on unmount.
+        return () => {
+            speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+            speechSynthesis.cancel();
+        };
+    }, []);
+
     const handleCopy = () => {
         navigator.clipboard.writeText(text);
         setIsCopied(true);
@@ -36,52 +65,76 @@ const DataSynapseNode: FC<{
     const handleShare = async () => {
         if (navigator.share) {
             try {
-                // Use the main title for sharing context
                 const shareTitle = title === 'SUMMARY' ? 'Article Summary' : 'Translated Summary';
                 await navigator.share({ title: shareTitle, text });
-            } catch (error) {
-                console.error("Sharing failed", error);
-                // Avoid alerting the user unless necessary
-            }
+            } catch (error) { console.error("Sharing failed", error); }
         } else {
-            // Fallback for browsers that don't support the Web Share API
             alert("The Web Share API is not supported in your browser.");
         }
     };
 
+    // --- FIX #3: The final, robust handleSpeak function ---
     const handleSpeak = () => {
         if (typeof window === 'undefined' || !window.speechSynthesis) return;
 
-        // If we are currently speaking on this card, cancel it.
         if (isSpeaking) {
             speechSynthesis.cancel();
             setIsSpeaking(false);
             return;
         }
-        
-        // Stop any other speech before starting new speech
+
+        // If for some reason voices haven't loaded, don't even try.
+        if (voices.length === 0) {
+            alert("Text-to-speech voices are still loading. Please try again in a moment.");
+            return;
+        }
+
         speechSynthesis.cancel();
 
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = lang;
-        // This onend will fire for this utterance, or if another one interrupts it.
-        utterance.onend = () => setIsSpeaking(false);
-        utterance.onerror = () => setIsSpeaking(false); // Handle potential errors
+        // 1. Find the best available voice from our STABLE state.
+        let selectedVoice: SpeechSynthesisVoice | null = null;
+        if (lang === 'ur-PK') {
+            selectedVoice = voices.find(voice => voice.lang === 'ur-PK' || voice.name.toLowerCase().includes('urdu')) || null;
+        } else {
+            selectedVoice = voices.find(voice => voice.lang === 'en-US' || voice.lang === 'en-GB' || voice.name.toLowerCase().includes('english')) || null;
+        }
         
-        setIsSpeaking(true);
-        speechSynthesis.speak(utterance);
-    };
+        // 2. Split text into chunks, including the Urdu full stop '۔'
+        const chunks = text.match(/[^.!?۔]+[.!?۔]*|[^.!?۔]+$/g) || [];
+        if (chunks.length === 0) return;
 
-    // Cleanup speech synthesis on component unmount
-    useEffect(() => {
-        return () => {
-            if (isSpeaking) {
-                speechSynthesis.cancel();
+        // 3. Define the self-chaining speak function.
+        const speakNext = (chunkIndex: number) => {
+            if (chunkIndex >= chunks.length) {
+                setIsSpeaking(false);
+                return;
             }
+
+            const utterance = new SpeechSynthesisUtterance(chunks[chunkIndex]);
+            utterance.lang = lang;
+            utterance.rate = 1;
+            if (selectedVoice) {
+                utterance.voice = selectedVoice;
+            }
+
+            utterance.onend = () => {
+                speakNext(chunkIndex + 1);
+            };
+            
+            utterance.onerror = (event) => {
+                console.error(`SpeechSynthesisUtterance.onerror:`, event);
+                setIsSpeaking(false);
+            };
+
+            speechSynthesis.speak(utterance);
         };
-    }, [isSpeaking]);
 
-
+        // 4. Start the speech chain directly inside the click handler.
+        setIsSpeaking(true);
+        speakNext(0);
+    };
+    
+    // --- The rest of your JSX is unchanged ---
     const textLines = text.split('\n');
     const lineVariants: Variants = {
         hidden: { opacity: 0, x: isRtl ? 15 : -15 },
@@ -91,24 +144,15 @@ const DataSynapseNode: FC<{
             transition: { duration: 0.5, ease: 'easeOut' }
         }
     };
-
-    // Style for the new action buttons
     const actionButton = "p-2 rounded-full text-slate-300 hover:text-white hover:bg-slate-700/50 transition-all duration-200";
 
     return (
         <motion.div
             variants={variants}
-            className="group relative w-full h-full p-6 rounded-xl overflow-hidden
-                       bg-slate-900/50 backdrop-blur-md"
+            className="group relative w-full h-full p-6 rounded-xl overflow-hidden bg-slate-900/50 backdrop-blur-md"
         >
-            {/* The original animated glowing border */}
-            <div className="absolute inset-0 rounded-xl border-2 border-slate-700/60
-                           transition-all duration-500
-                           group-hover:border-cyan-400/80 group-hover:shadow-[0_0_25px_rgba(34,211,238,0.4)]" />
-
-            {/* Content Wrapper */}
+            <div className="absolute inset-0 rounded-xl border-2 border-slate-700/60 transition-all duration-500 group-hover:border-cyan-400/80 group-hover:shadow-[0_0_25px_rgba(34,211,238,0.4)]" />
             <div className="relative z-10">
-                {/* Header */}
                 <motion.div
                     dir={isRtl ? 'rtl' : 'ltr'}
                     className="flex justify-between items-center mb-4"
@@ -120,7 +164,6 @@ const DataSynapseNode: FC<{
                         <Icon className="w-7 h-7 text-cyan-400" />
                         <h3 className="text-xl font-mono font-bold text-white">{title}</h3>
                     </div>
-                    {/* New Action Button Group */}
                     <div className="flex items-center gap-1">
                         <button onClick={handleSpeak} className={actionButton} title={isSpeaking ? "Stop Listening" : "Listen to Text"}>
                             {isSpeaking ? <X className="w-5 h-5 text-red-400 animate-pulse"/> : <Volume2 className="w-5 h-5" />}
@@ -133,8 +176,6 @@ const DataSynapseNode: FC<{
                         </button>
                     </div>
                 </motion.div>
-
-                {/* Animated Text Content (from original design) */}
                 <motion.div
                     initial="hidden"
                     animate="visible"
@@ -156,6 +197,7 @@ const DataSynapseNode: FC<{
     );
 };
 
+// No changes were needed in this main component. It remains the same.
 export default function OutputSection({ isProcessing, isFinished, summaryData, processingSteps, error }: OutputSectionProps) {
     const [currentStepText, setCurrentStepText] = useState('');
 
@@ -193,7 +235,6 @@ export default function OutputSection({ isProcessing, isFinished, summaryData, p
                 <AnimatePresence mode="wait">
                     {isProcessing && (
                          <motion.div key="processing" exit={{ opacity: 0, scale: 0.9 }} className="flex flex-col items-center justify-center text-center">
-                            {/* Unchanged processing animation */}
                             <div className="relative flex items-center justify-center w-32 h-32 mb-8">
                                 <div className="absolute inset-0.5 bg-slate-950 rounded-full z-10" />
                                 <div className="absolute inset-0 bg-cyan-400 rounded-full z-0 blur-xl" />
@@ -230,7 +271,6 @@ export default function OutputSection({ isProcessing, isFinished, summaryData, p
                                 </motion.div>
                             ) : summaryData && (
                                 <div className="relative grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-stretch gap-x-6 gap-y-10">
-                                    {/* Central Core and connecting lines (from original design) */}
                                     <motion.div
                                         initial={{ opacity: 0, scale: 0 }}
                                         animate={{ opacity: 1, scale: 1 }}
