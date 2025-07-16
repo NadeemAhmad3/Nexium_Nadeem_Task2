@@ -2,7 +2,8 @@
 
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import * as cheerio from 'cheerio';
+import { JSDOM } from 'jsdom';
+import { Readability } from '@mozilla/readability';
 import { genAI } from '@/lib/gemini';
 import prisma from '@/lib/prisma';
 import mongoClientPromise from '@/lib/mongodb';
@@ -15,14 +16,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Please provide a valid URL.' }, { status: 400 });
     }
 
-    // 1. Check if the summary for this URL already exists in the database.
+    // 1. Check for an existing summary in the database
     const existingSummary = await prisma.summary.findUnique({
-      where: {
-        originalUrl: url,
-      },
+      where: { originalUrl: url },
     });
 
-    // 2. If it exists, return the cached data immediately.
+    // 2. Return cached data if it exists
     if (existingSummary) {
       console.log('Found existing summary in DB. Returning cached data.');
       return NextResponse.json({
@@ -33,29 +32,35 @@ export async function POST(request: Request) {
 
     console.log('No existing summary found. Processing new URL.');
 
-    // Scrape the URL
+    // --- GENERIC CONTENT EXTRACTION ---
+    // Fetch the HTML from the URL
     const { data: html } = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+      },
     });
 
-    const $ = cheerio.load(html);
-    const article = $('article');
-    if (article.length === 0) {
-        return NextResponse.json({ error: 'Could not find the main article content.' }, { status: 400 });
+    // Use JSDOM to create a DOM object from the HTML
+    const dom = new JSDOM(html, { url });
+    
+    // Use Mozilla's Readability to parse the DOM and find the main article
+    const reader = new Readability(dom.window.document);
+    const article = reader.parse();
+
+    // Check if Readability successfully found content
+    if (!article || !article.textContent) {
+      return NextResponse.json({ error: 'Could not extract the main article content from this URL.' }, { status: 400 });
     }
-    const title = article.find('h1').first().text();
-    const paragraphs = article.find('p').map((i, el) => $(el).text()).get();
-    const fullText = [title, ...paragraphs].join('\n\n');
-    if (!fullText.trim()) {
-      return NextResponse.json({ error: 'Extracted text was empty.' }, { status: 400 });
-    }
+    
+    // We now have the clean text content, title, and HTML content
+    const fullText = article.textContent;
+    const title = article.title;
 
     // --- GENERATE SUMMARY WITH GEMINI ---
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
     
-    const summaryPrompt = `Summarize this article concisely in English:\n\n${fullText.substring(0, 30000)}`;
+    const summaryPrompt = `Summarize this article concisely in English. The title of the article is "${title}".\n\n${fullText.substring(0, 30000)}`;
     const summaryResult = await model.generateContent(summaryPrompt);
     const summary = summaryResult.response.text();
 
@@ -88,25 +93,16 @@ export async function POST(request: Request) {
     console.error('API Error:', error);
     let errorMessage = 'An unexpected error occurred.';
 
-    // Check for Prisma's unique constraint error (P2002)
-    if (typeof error === 'object' && error !== null && 'code' in error && (error as { code: unknown }).code === 'P2002') {
-        const prismaError = error as { meta?: { target?: string[] } };
-        if (prismaError.meta?.target?.includes('originalUrl')) {
-            errorMessage = 'This URL has already been summarized.';
-            return NextResponse.json({ error: errorMessage }, { status: 409 }); // 409 Conflict status
-        }
-    }
-    
-    // Check for Axios-specific errors
-    if (axios.isAxiosError(error) && error.response?.status === 403) {
+    if (axios.isAxiosError(error)) {
+      if (error.response?.status === 403) {
         errorMessage = 'Failed to scrape the URL. The website is blocking automated requests.';
-    } 
-    // Check for generic Error objects to get the message
-    else if (error instanceof Error) {
+      } else if (error.response?.status === 404) {
+        errorMessage = 'The requested URL could not be found.';
+      }
+    } else if (error instanceof Error) {
         errorMessage = error.message;
     }
     
-    // Fallback for any other type of error
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
