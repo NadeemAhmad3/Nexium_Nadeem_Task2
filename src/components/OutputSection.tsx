@@ -32,24 +32,22 @@ const DataSynapseNode: FC<{
 
     const [isCopied, setIsCopied] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
-    // --- FIX #1: Store the browser's voices in React State ---
     const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
-    // --- FIX #2: A dedicated useEffect to load voices safely ---
     useEffect(() => {
-        // This function loads voices into our component's state.
         const loadVoices = () => {
             const availableVoices = speechSynthesis.getVoices();
             if (availableVoices.length > 0) {
                 setVoices(availableVoices);
+                // --- DIAGNOSTIC #1: Log all voices the browser finds. ---
+                // This is the most important step for debugging the Vercel environment.
+                console.log("Available Voices Loaded:", availableVoices);
             }
         };
 
-        // Load voices immediately and add an event listener for when they change.
         loadVoices();
         speechSynthesis.addEventListener('voiceschanged', loadVoices);
-
-        // Cleanup function to remove listener and stop speech on unmount.
+        
         return () => {
             speechSynthesis.removeEventListener('voiceschanged', loadVoices);
             speechSynthesis.cancel();
@@ -73,7 +71,6 @@ const DataSynapseNode: FC<{
         }
     };
 
-    // --- FIX #3: The final, robust handleSpeak function ---
     const handleSpeak = () => {
         if (typeof window === 'undefined' || !window.speechSynthesis) return;
 
@@ -83,53 +80,52 @@ const DataSynapseNode: FC<{
             return;
         }
 
-        // If for some reason voices haven't loaded, don't even try.
         if (voices.length === 0) {
-            alert("Text-to-speech voices are still loading. Please try again in a moment.");
+            alert("Text-to-speech voices have not loaded yet. Please try again in a moment.");
             return;
         }
 
         speechSynthesis.cancel();
 
-        // 1. Find the best available voice from our STABLE state.
         let selectedVoice: SpeechSynthesisVoice | null = null;
         if (lang === 'ur-PK') {
             selectedVoice = voices.find(voice => voice.lang === 'ur-PK' || voice.name.toLowerCase().includes('urdu')) || null;
         } else {
-            selectedVoice = voices.find(voice => voice.lang === 'en-US' || voice.lang === 'en-GB' || voice.name.toLowerCase().includes('english')) || null;
+            selectedVoice = voices.find(voice => voice.lang === 'en-US' || voice.name.toLowerCase().includes('english')) || null;
         }
         
-        // 2. Split text into chunks, including the Urdu full stop '۔'
+        // --- DIAGNOSTIC #2: Log which voice we are trying to use. ---
+        console.log(`Attempting to use voice for ${lang}:`, selectedVoice?.name || '[Default Fallback]');
+        
+        // --- DIAGNOSTIC #3: Defend against a missing voice. ---
+        // This handles the case where no Urdu voice was found on Vercel.
+        if (!selectedVoice && lang === 'ur-PK') {
+            alert("An Urdu-compatible voice was not found on your browser or operating system. Speech cannot be played.");
+            return;
+        }
+
         const chunks = text.match(/[^.!?۔]+[.!?۔]*|[^.!?۔]+$/g) || [];
         if (chunks.length === 0) return;
 
-        // 3. Define the self-chaining speak function.
         const speakNext = (chunkIndex: number) => {
             if (chunkIndex >= chunks.length) {
                 setIsSpeaking(false);
                 return;
             }
-
             const utterance = new SpeechSynthesisUtterance(chunks[chunkIndex]);
             utterance.lang = lang;
             utterance.rate = 1;
             if (selectedVoice) {
                 utterance.voice = selectedVoice;
             }
-
-            utterance.onend = () => {
-                speakNext(chunkIndex + 1);
-            };
-            
+            utterance.onend = () => speakNext(chunkIndex + 1);
             utterance.onerror = (event) => {
                 console.error(`SpeechSynthesisUtterance.onerror:`, event);
                 setIsSpeaking(false);
             };
-
             speechSynthesis.speak(utterance);
         };
 
-        // 4. Start the speech chain directly inside the click handler.
         setIsSpeaking(true);
         speakNext(0);
     };
